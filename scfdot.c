@@ -19,11 +19,8 @@
  */
 
 /*
- * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
- * Use is subject to license terms.
+ * Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
  */
-
-#pragma ident	"@(#)scfdot.c	1.23	05/10/18 SMI"
 
 /*
  * Generate a dot file for the SMF dependency graph on this machine.
@@ -71,7 +68,7 @@
 
 /* Private libscf function */
 extern int scf_parse_svc_fmri(char *fmri, const char **scope,
-    const char **service, const char **instance, const char **propertygroup,
+    const char **service, const char **instance, const char ***pgs, int *npgs,
     const char **property);
 
 
@@ -219,12 +216,26 @@ is_enabled(scf_instance_t *inst)
  * g_val.
  */
 static void
-get_restarter(scf_instance_t *i, char *buf, size_t bufsz)
+get_restarter(scf_instance_t *i, char *buf, size_t bufsz, char *fmri)
 {
-	if (scf_instance_get_pg_composed(i, NULL, SCF_PG_GENERAL, g_pg) != 0)
-		scfdie();
-
 	buf[0] = '\0';
+	if (scf_instance_get_pg_composed(i, NULL, SCF_PG_GENERAL, g_pg) != 0) {
+		switch (scf_error()) {
+		case SCF_ERROR_NOT_FOUND:
+			/*
+			 * Seen with svc:/network/tnctl:default.
+			 * Possibly 28101695.
+			 */
+			return;
+		default:
+			(void) fprintf(stderr,
+			    "%s:%d: Unexpected libscf error: %s for %s.\n",
+			    __FILE__, __LINE__, scf_strerror(scf_error()),
+			    fmri);
+			exit(1);
+		}
+	}
+
 	if (scf_pg_get_property(g_pg, SCF_PROPERTY_RESTARTER, g_prop) != 0) {
 		if (scf_error() != SCF_ERROR_NOT_FOUND)
 			scfdie();
@@ -280,13 +291,13 @@ clean_name(char *name)
 
 /*
  * Print an edge for a dependency.  port should be the name of the dependency
- * group.
+ * group, and seems to need to be quoted too.
  */
 static void
 print_dependency(const char *from, const char *port, const char *to,
     const char *opts, int weight)
 {
-	(void) printf("\"%s\":%s:e -> \"%s\"", from, port, to);
+	(void) printf("\"%s\":\"%s\":e -> \"%s\"", from, port, to);
 
 	if (weight != 1 || (opts != NULL && opts[0] != '\0')) {
 		(void) fputs(" [", stdout);
@@ -473,7 +484,7 @@ process_instance(scf_instance_t *i, const char *svcname)
 	allpgs[0] = '\0';
 	inetd_svc = 0;
 
-	get_restarter(i, depname, max_value_len + 1);
+	get_restarter(i, depname, max_value_len + 1, fmri);
 
 	if (depname[0] != '\0') {
 		++ndeps;
@@ -618,7 +629,7 @@ process_instance(scf_instance_t *i, const char *svcname)
 			 * depname_copy, which may be modified.
 			 */
 			if (scf_parse_svc_fmri(depname_copy, NULL, &sname,
-			    &iname, NULL, NULL) != 0)
+				&iname, NULL, NULL, NULL) != 0)
 				continue;
 
 			if (scf_handle_decode_fmri(h, depname, NULL, g_svc,
